@@ -1,0 +1,3 @@
+# Installs the project (agentops, api, ui, eval) and its dependencies from pyproject.toml.
+# Used by Streamlit Community Cloud and Render so both get the same package layout.
+-e .

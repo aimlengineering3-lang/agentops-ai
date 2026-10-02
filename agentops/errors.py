@@ -50,7 +50,19 @@ class InvalidRequestError(ProviderError):
 
 
 class MalformedOutputError(AgentOpsError):
-    """Model output could not be parsed or validated against the expected schema."""
+    """Model output could not be parsed or validated against the expected schema.
+
+    Failed attempts still cost tokens and provider quota, so the error carries what they
+    used; the caller records it instead of letting the cost vanish from the run's totals.
+    """
+
+    def __init__(
+        self, message: str, *, tokens_in: int = 0, tokens_out: int = 0, attempts: int = 1
+    ) -> None:
+        super().__init__(message)
+        self.tokens_in = tokens_in
+        self.tokens_out = tokens_out
+        self.attempts = attempts
 
 
 class BudgetExceededError(AgentOpsError):

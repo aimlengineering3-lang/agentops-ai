@@ -16,11 +16,17 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr | None = None
     tavily_api_key: SecretStr | None = None
     serper_api_key: SecretStr | None = None
-    database_url: SecretStr | None = None
+    database_url: SecretStr | None = None  # reserved for a future Postgres repository
 
     # Model names change often, so they are configuration, never hard-coded.
     gemini_model: str = ""
+    # Extra Gemini models, comma-separated. Free-tier quotas are per model, so each extra
+    # model is an independent fallback with its own daily budget.
+    gemini_extra_models: str = ""
     groq_model: str = ""
+
+    # SQLite file that keeps runs across restarts. Empty = in-memory only.
+    runs_db_path: str = ""
 
     log_level: str = "INFO"
     enable_code_mode: bool = False  # jailed Python analysis: OFF unless explicitly enabled

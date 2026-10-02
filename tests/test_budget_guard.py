@@ -63,3 +63,24 @@ def test_critic_cycles_do_not_hard_stop_the_run():
     state.usage.critic_cycles = 1
     guard.check()  # must not raise: finalizer still has to run
     assert state.usage.can_run_critic_cycle(state.limits) is False
+
+
+def test_wall_clock_reserve_stops_work_early_but_not_finalization():
+    state, clock, guard = _guard(max_wall_clock_s=100, finalize_reserve_s=20)
+    clock.now += 79
+    guard.check()  # still inside the work phase (limit 80)
+    clock.now += 2  # 81s elapsed: work phase is over
+    with pytest.raises(BudgetExceededError, match="wall_clock"):
+        guard.check()
+
+    guard.enter_finalization()
+    guard.check()  # the reserve is released: finalizing may use the last 20s
+    guard.before_llm_call()
+    clock.now += 20  # 101s elapsed: the full limit is hard
+    with pytest.raises(BudgetExceededError, match="wall_clock"):
+        guard.check()
+
+
+def test_reserve_is_capped_so_small_limits_keep_work_time():
+    limits = BudgetLimits(max_wall_clock_s=40, finalize_reserve_s=60)
+    assert limits.work_wall_clock_s() == 30  # reserve capped at a quarter of 40

@@ -13,8 +13,9 @@ from agentops.contracts import (
     RunStatus,
     Severity,
     Subtask,
+    SubtaskStatus,
 )
-from agentops.errors import MalformedOutputError
+from agentops.errors import MalformedOutputError, RateLimitError
 from agentops.orchestrator import Orchestrator
 
 
@@ -210,3 +211,126 @@ def test_budget_exhaustion_mid_run_ends_gracefully_not_crash():
     assert researcher.calls == []  # budget was already gone before s1 could start
     assert finalizer.calls == 1  # finalizer still gets a chance to run
     assert state.events[-1].event_type == EventType.RUN_FINISHED
+
+
+class RateLimitedResearcher(RecordingAgent):
+    """Researcher whose provider is rate-limited for the given subtask ids."""
+
+    def __init__(self, failing: set[str]) -> None:
+        super().__init__()
+        self._failing = failing
+
+    def research(self, state, ctx, subtask):
+        self.calls.append(subtask.id)
+        if subtask.id in self._failing:
+            raise RateLimitError("groq rate limit (HTTP 429)", provider="groq")
+
+
+def _orchestrator(*, planner=None, researcher=None, critic=None):
+    analyst, finalizer = RecordingAgent(), CountingFinalizer()
+    orchestrator = Orchestrator(
+        planner=planner or FakePlanner(),
+        researcher=researcher or RecordingAgent(),
+        analyst=analyst,
+        critic=critic or ScriptedCritic(_pass()),
+        finalizer=finalizer,
+    )
+    return orchestrator, analyst, finalizer
+
+
+def test_provider_error_in_one_subtask_degrades_instead_of_failing_run():
+    state = RunState(objective="Compare three approaches for an enterprise AI platform")
+    orchestrator, analyst, finalizer = _orchestrator(researcher=RateLimitedResearcher({"s1"}))
+
+    orchestrator.run(state)
+
+    assert state.status == RunStatus.COMPLETED_WITH_LIMITATIONS
+    assert state.plan.get("s1").status == SubtaskStatus.FAILED
+    assert state.plan.get("s2").status == SubtaskStatus.DONE  # the run kept going
+    assert analyst.calls == ["s2"]  # no analysis of a subtask whose research failed
+    assert finalizer.calls == 1
+    assert any("s1" in item and "RateLimitError" in item for item in state.limitations)
+    errors = [e for e in state.events if e.event_type == EventType.ERROR]
+    assert len(errors) == 1 and errors[0].subtask_id == "s1"
+    assert state.events[-1].event_type == EventType.RUN_FINISHED
+
+
+def test_persistent_provider_failure_stays_bounded_across_critic_retries():
+    critic = ScriptedCritic(
+        _fail(("s1", CritiqueAction.RESEARCH_MORE)),
+        _fail(("s1", CritiqueAction.RESEARCH_MORE)),
+    )
+    state = RunState(
+        objective="Compare three approaches for an enterprise AI platform",
+        limits=BudgetLimits(max_critic_cycles=2),
+    )
+    researcher = RateLimitedResearcher({"s1"})
+    orchestrator, _, finalizer = _orchestrator(researcher=researcher, critic=critic)
+
+    orchestrator.run(state)  # must terminate, not loop or raise
+
+    assert state.status == RunStatus.COMPLETED_WITH_LIMITATIONS
+    assert finalizer.calls == 1
+    assert researcher.calls.count("s1") <= 2
+
+
+class RateLimitedPlanner:
+    def plan(self, state, ctx):
+        raise RateLimitError("groq rate limit (HTTP 429)", provider="groq")
+
+
+def test_planner_provider_failure_fails_run_with_reason_and_closed_trace():
+    state = RunState(objective="Compare three approaches for an enterprise AI platform")
+    orchestrator, _, finalizer = _orchestrator(planner=RateLimitedPlanner())
+
+    orchestrator.run(state)  # must not raise
+
+    assert state.status == RunStatus.FAILED
+    assert state.finished_at is not None
+    assert finalizer.calls == 0
+    assert any("Planning failed" in item for item in state.limitations)
+    types = [e.event_type for e in state.events]
+    assert types[0] == EventType.RUN_STARTED
+    assert EventType.ERROR in types
+    assert types[-1] == EventType.RUN_FINISHED
+
+
+def test_finalizer_runs_with_released_reserve_after_work_phase_budget_is_spent():
+    class _Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock = _Clock()
+
+    class _SlowResearcher(RecordingAgent):
+        def research(self, state, ctx, subtask):
+            super().research(state, ctx, subtask)
+            clock.now = 85.0  # past the work limit (80) but inside the full limit (100)
+
+    class _GuardCheckingFinalizer:
+        calls = 0
+
+        def finalize(self, state, ctx):
+            self.calls += 1
+            ctx.guard.check()  # would raise if the reserve were not released
+
+    finalizer = _GuardCheckingFinalizer()
+    state = RunState(
+        objective="Compare three approaches for an enterprise AI platform",
+        limits=BudgetLimits(max_wall_clock_s=100, finalize_reserve_s=20),
+    )
+    orchestrator = Orchestrator(
+        planner=FakePlanner(),
+        researcher=_SlowResearcher(),
+        analyst=RecordingAgent(),
+        critic=ScriptedCritic(_pass()),
+        finalizer=finalizer,
+        clock=clock,
+    )
+
+    orchestrator.run(state)
+
+    assert finalizer.calls == 1
+    assert not any("Finalizer could not complete" in item for item in state.limitations)

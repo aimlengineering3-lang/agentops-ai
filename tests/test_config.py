@@ -6,6 +6,7 @@ from agentops.errors import ConfigError
 ENV_NAMES = [
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
+    "GEMINI_EXTRA_MODELS",
     "GROQ_API_KEY",
     "GROQ_MODEL",
     "TAVILY_API_KEY",
@@ -63,3 +64,9 @@ def test_require_works_for_plain_string_settings(monkeypatch):
         make_settings().require("gemini_model")
     monkeypatch.setenv("GEMINI_MODEL", "some-model")
     assert make_settings().require("gemini_model") == "some-model"
+
+
+def test_extra_gemini_models_default_to_empty_and_read_from_environment(monkeypatch):
+    assert make_settings().gemini_extra_models == ""
+    monkeypatch.setenv("GEMINI_EXTRA_MODELS", "model-b, model-c")
+    assert make_settings().gemini_extra_models == "model-b, model-c"

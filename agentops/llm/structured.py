@@ -5,7 +5,7 @@ from pydantic import BaseModel, ValidationError
 
 from agentops.errors import MalformedOutputError
 
-from .base import LLMResponse, Message
+from .base import LLMResponse, Message, Usage
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -35,13 +35,14 @@ def generate_structured(
 ) -> tuple[SchemaT, LLMResponse]:
     """Call `generator`, parse the response as `schema`, with one bounded repair attempt.
 
-    Returns (parsed_object, last_llm_response) so the caller can still record tokens
-    and provider from the response that actually produced the accepted output. Raises
-    MalformedOutputError if output still fails validation after the repair attempt --
-    the caller decides what "step failed, degrade gracefully" means for it.
+    Returns (parsed_object, last_llm_response). When a repair was needed, the returned
+    response's `usage` is the SUM of both attempts and `attempts` is 2, so the caller
+    records the true token cost. Raises MalformedOutputError (carrying both attempts'
+    usage) if output still fails validation after the repair attempt -- the caller decides
+    what "step failed, degrade gracefully" means for it.
     """
     attempt_messages = list(messages)
-    response = generator.generate(
+    first = response = generator.generate(
         attempt_messages,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
@@ -65,10 +66,18 @@ def generate_structured(
             json_output=True,
             timeout_s=timeout_s,
         )
+        combined = Usage(
+            tokens_in=first.usage.tokens_in + response.usage.tokens_in,
+            tokens_out=first.usage.tokens_out + response.usage.tokens_out,
+        )
         try:
-            return schema.model_validate_json(response.text), response
+            parsed = schema.model_validate_json(response.text)
         except ValidationError as second_error:
             raise MalformedOutputError(
                 "model output failed schema validation twice "
-                f"(after one repair attempt): {second_error}"
+                f"(after one repair attempt): {second_error}",
+                tokens_in=combined.tokens_in,
+                tokens_out=combined.tokens_out,
+                attempts=2,
             ) from second_error
+        return parsed, response.model_copy(update={"usage": combined, "attempts": 2})

@@ -1,0 +1,31 @@
+# Render Blueprint for the FastAPI backend (free web service).
+# Free-tier facts to design around (see README, "Free-tier limits"):
+#   - spins down after 15 minutes without inbound traffic; cold start takes up to ~1 minute
+#   - ephemeral filesystem: nothing written to disk survives a restart (leave RUNS_DB_PATH unset)
+services:
+  - type: web
+    name: agentops-api
+    runtime: python
+    plan: free
+    buildCommand: pip install .
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        sync: false
+      - key: GEMINI_EXTRA_MODELS
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: SERPER_API_KEY
+        sync: false
+      - key: DAILY_RUN_CAP
+        value: "20"

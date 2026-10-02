@@ -103,3 +103,75 @@ def test_no_candidates_raises_invalid_request_error():
 
     with pytest.raises(InvalidRequestError, match="SAFETY"):
         _provider(handler).generate([Message(role="user", content="hi")])
+
+
+def test_429_reads_retry_delay_from_the_body_retry_info():
+    def handler(request):
+        body = {
+            "error": {
+                "code": 429,
+                "message": "You exceeded your current quota.",
+                "details": [
+                    {"@type": "type.googleapis.com/google.rpc.Help", "links": []},
+                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "15s"},
+                ],
+            }
+        }
+        return httpx.Response(429, json=body)
+
+    with pytest.raises(RateLimitError) as exc_info:
+        _provider(handler).generate([Message(role="user", content="hi")])
+
+    assert exc_info.value.retry_after_s == 16.0  # 15s + 1s margin
+
+
+def test_429_falls_back_to_retry_in_text_when_no_retry_info():
+    def handler(request):
+        body = {"error": {"code": 429, "message": "Quota exceeded.\nPlease retry in 15.5s."}}
+        return httpx.Response(429, json=body)
+
+    with pytest.raises(RateLimitError) as exc_info:
+        _provider(handler).generate([Message(role="user", content="hi")])
+
+    assert exc_info.value.retry_after_s == 16.5
+
+
+def test_429_with_unusable_body_has_no_retry_after():
+    def handler(request):
+        return httpx.Response(429, text="not json")
+
+    with pytest.raises(RateLimitError) as exc_info:
+        _provider(handler).generate([Message(role="user", content="hi")])
+
+    assert exc_info.value.retry_after_s is None
+
+
+def test_429_on_a_daily_quota_benches_the_model_instead_of_a_short_retry():
+    def handler(request):
+        body = {
+            "error": {
+                "code": 429,
+                "message": "You exceeded your current quota. Please retry in 12s.",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                        "violations": [
+                            {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}
+                        ],
+                    },
+                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "12s"},
+                ],
+            }
+        }
+        return httpx.Response(429, json=body)
+
+    with pytest.raises(RateLimitError) as exc_info:
+        _provider(handler).generate([Message(role="user", content="hi")])
+
+    assert exc_info.value.retry_after_s == 3600.0  # not the misleading 12s
+
+
+def test_provider_name_is_configurable_for_multiple_models():
+    provider = GeminiProvider("k", "model-b", name="gemini:model-b")
+    assert provider.name == "gemini:model-b"
+    assert GeminiProvider("k", "model-a").name == "gemini"

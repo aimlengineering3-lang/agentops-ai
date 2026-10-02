@@ -20,6 +20,8 @@ class LLMResponse(BaseModel):
     provider: str
     model: str
     latency_ms: int = Field(default=0, ge=0)
+    # Provider requests behind this response: 2 when a schema-repair retry was needed.
+    attempts: int = Field(default=1, ge=1)
 
 
 @runtime_checkable

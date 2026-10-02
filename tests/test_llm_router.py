@@ -64,3 +64,84 @@ def test_backoff_sleep_is_called_between_retries():
 def test_router_requires_at_least_one_provider():
     with pytest.raises(ValueError):
         LLMRouter([])
+
+
+def test_failover_is_logged_with_reason(caplog):
+    primary = FakeLLM([RateLimitError("429 quota", provider="primary")], name="primary")
+    fallback = FakeLLM(["fallback answer"], name="fallback")
+    router = LLMRouter([primary, fallback])
+
+    with caplog.at_level("WARNING", logger="agentops.llm.router"):
+        router.generate(MESSAGES)
+
+    assert "primary" in caplog.text
+    assert "RateLimitError" in caplog.text
+    assert "failing over" in caplog.text
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def test_rate_limited_provider_is_skipped_during_cooldown():
+    clock = _Clock()
+    primary = FakeLLM([RateLimitError("429", provider="primary", retry_after_s=30)], name="primary")
+    fallback = FakeLLM(["one", "two"], name="fallback")
+    router = LLMRouter([primary, fallback], max_wait_s=5, clock=clock, sleep=clock.sleep)
+
+    assert router.generate(MESSAGES).text == "one"
+    assert router.generate(MESSAGES).text == "two"
+
+    assert len(primary.calls) == 1  # not hammered again while cooling down
+    assert clock.sleeps == []
+
+
+def test_waits_for_the_soonest_provider_when_all_are_cooling_down():
+    clock = _Clock()
+    only = FakeLLM(
+        [RateLimitError("429", provider="only", retry_after_s=3), "recovered"], name="only"
+    )
+    router = LLMRouter([only], max_wait_s=10, clock=clock, sleep=clock.sleep)
+
+    response = router.generate(MESSAGES)
+
+    assert response.text == "recovered"
+    assert clock.sleeps == [3]
+
+
+def test_never_waits_longer_than_max_wait():
+    clock = _Clock()
+    only = FakeLLM([RateLimitError("429", provider="only", retry_after_s=120)], name="only")
+    router = LLMRouter([only], max_wait_s=10, clock=clock, sleep=clock.sleep)
+
+    with pytest.raises(RateLimitError):
+        router.generate(MESSAGES)
+
+    assert clock.sleeps == []  # bounded: it gave up instead of sleeping 120s
+
+
+def test_repeated_failures_without_retry_after_back_off_longer():
+    clock = _Clock()
+    primary = FakeLLM(
+        [RateLimitError("429", provider="primary"), RateLimitError("429", provider="primary")],
+        name="primary",
+    )
+    fallback = FakeLLM(["a", "b", "c"], name="fallback")
+    router = LLMRouter([primary, fallback], max_wait_s=5, clock=clock, sleep=clock.sleep)
+
+    router.generate(MESSAGES)  # primary fails -> cooldown 30s
+    clock.now += 31
+    router.generate(MESSAGES)  # primary retried, fails again -> cooldown 60s
+    clock.now += 31
+    router.generate(MESSAGES)  # still cooling (60s), so it is skipped
+
+    assert len(primary.calls) == 2

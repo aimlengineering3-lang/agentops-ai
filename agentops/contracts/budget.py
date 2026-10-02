@@ -7,9 +7,20 @@ class BudgetLimits(BaseModel):
     max_retries_per_subtask: int = Field(default=2, ge=0)
     max_tool_calls: int = Field(default=25, gt=0)
     max_llm_calls: int = Field(default=40, gt=0)
-    max_wall_clock_s: int = Field(default=240, gt=0)
+    max_wall_clock_s: int = Field(default=300, gt=0)
+    # Slice of the wall clock kept back for the Finalizer: research/critic work stops this
+    # early so a slow run still gets its final report instead of a raw-findings fallback.
+    finalize_reserve_s: int = Field(default=60, ge=0)
     llm_timeout_s: int = Field(default=30, gt=0)
     search_timeout_s: int = Field(default=15, gt=0)
+
+    def work_wall_clock_s(self) -> float:
+        """Wall-clock limit for the work phase (research/analysis/critic), before finalizing.
+
+        The reserve is capped at a quarter of the total so a small max_wall_clock_s never
+        leaves the work phase with no time at all.
+        """
+        return self.max_wall_clock_s - min(self.finalize_reserve_s, self.max_wall_clock_s // 4)
 
 
 class BudgetUsage(BaseModel):
@@ -18,15 +29,20 @@ class BudgetUsage(BaseModel):
     llm_calls: int = 0
     tokens_in: int = 0
     tokens_out: int = 0
+    llm_repairs: int = 0  # extra provider requests spent on schema-repair retries
     elapsed_s: float = 0.0
     retries_by_subtask: dict[str, int] = Field(default_factory=dict)
 
-    def exhausted(self, limits: BudgetLimits) -> list[str]:
-        """Names of budgets that are used up. Empty list means we may continue."""
+    def exhausted(self, limits: BudgetLimits, *, finalizing: bool = False) -> list[str]:
+        """Names of budgets that are used up. Empty list means we may continue.
+
+        While finalizing, the wall-clock reserve is released: only the full limit applies.
+        """
+        wall_limit = limits.max_wall_clock_s if finalizing else limits.work_wall_clock_s()
         checks = {
             "tool_calls": self.tool_calls >= limits.max_tool_calls,
             "llm_calls": self.llm_calls >= limits.max_llm_calls,
-            "wall_clock": self.elapsed_s >= limits.max_wall_clock_s,
+            "wall_clock": self.elapsed_s >= wall_limit,
         }
         return [name for name, hit in checks.items() if hit]
 

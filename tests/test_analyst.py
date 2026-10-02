@@ -149,3 +149,72 @@ def test_llm_call_event_is_emitted():
 
     assert any(e.event_type == EventType.LLM_CALL for e in state.events)
     assert state.usage.llm_calls == 1
+
+
+# -- calculation verification ------------------------------------------------------------
+
+
+def test_valid_calculation_is_verified_and_appended():
+    state = _state_with_evidence("Flight costs PKR 133396.", "Visa costs PKR 5300.")
+    (ev0, ev1) = state.evidence.values()
+    response = json.dumps(
+        {
+            "findings": [
+                {
+                    "statement": "Total trip cost is PKR 138696.",
+                    "kind": "analysis",
+                    "evidence_indices": [0, 1],
+                    "confidence": 0.9,
+                    "calculation": "133396 + 5300",
+                }
+            ]
+        }
+    )
+    llm = FakeLLM([response])
+    LLMAnalyst(llm).analyze(state, _context(state), SUBTASK)
+
+    assert len(state.findings) == 1
+    assert "(verified: 133396 + 5300 = 138696)" in state.findings[0].statement
+
+
+def test_unsafe_calculation_is_rejected_but_finding_is_kept():
+    state = _state_with_evidence("Flight costs PKR 133396.")
+    response = json.dumps(
+        {
+            "findings": [
+                {
+                    "statement": "Total trip cost is about PKR 138696.",
+                    "kind": "analysis",
+                    "evidence_indices": [0],
+                    "confidence": 0.7,
+                    "calculation": "__import__('os').system('echo hi')",
+                }
+            ]
+        }
+    )
+    llm = FakeLLM([response])
+    LLMAnalyst(llm).analyze(state, _context(state), SUBTASK)
+
+    assert len(state.findings) == 1
+    assert state.findings[0].statement == "Total trip cost is about PKR 138696."
+    assert any("could not verify calculation" in note for note in state.limitations)
+
+
+def test_finding_with_no_calculation_field_is_unaffected():
+    state = _state_with_evidence("FastAPI is async-first.")
+    response = json.dumps(
+        {
+            "findings": [
+                {
+                    "statement": "FastAPI is async-first.",
+                    "kind": "evidence",
+                    "evidence_indices": [0],
+                    "confidence": 0.9,
+                }
+            ]
+        }
+    )
+    llm = FakeLLM([response])
+    LLMAnalyst(llm).analyze(state, _context(state), SUBTASK)
+
+    assert state.findings[0].statement == "FastAPI is async-first."

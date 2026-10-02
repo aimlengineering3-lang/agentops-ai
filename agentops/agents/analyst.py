@@ -5,6 +5,7 @@ from agentops.contracts.analysis import Finding
 from agentops.errors import MalformedOutputError, ProviderError
 from agentops.llm import Generator, Message
 from agentops.orchestrator import RunContext
+from agentops.tools import CalculatorError, safe_eval
 
 from .llm_call import call_llm_structured
 
@@ -18,7 +19,8 @@ JSON, no prose:
     {"statement": "<1-2 sentence finding, in your own words>",
      "kind": "evidence" | "analysis" | "conclusion",
      "evidence_indices": [<int, ...>],
-     "confidence": <float 0.0-1.0>}
+     "confidence": <float 0.0-1.0>,
+     "calculation": "<arithmetic expression, or omit this field>"}
   ]
 }
 
@@ -30,6 +32,14 @@ Kinds, keep these distinct:
 - "conclusion": your own judgment or recommendation. Cite evidence_indices
   only if it is grounded in specific evidence; otherwise leave it empty, but
   never present a conclusion as if it were a verified fact.
+
+If a finding states a number you got by adding, subtracting, multiplying or
+dividing numbers from the evidence (a total cost, a budget range, a sum of
+fees), set "calculation" to the plain arithmetic expression that produces it
+(e.g. "133396 + 5300 + 44631"), using only numbers and + - * / ( ). Do not put
+units, currency symbols or variable names in it. This lets the figure in your
+statement be checked, not just trusted. Omit the field entirely when a finding
+has no such arithmetic.
 
 Rules:
 - evidence_indices MUST be indices from the list below. Never invent one.
@@ -43,6 +53,7 @@ class _FindingItem(BaseModel):
     kind: FindingKind
     evidence_indices: list[int] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    calculation: str | None = Field(default=None, max_length=200)
 
 
 class _AnalysisFindings(BaseModel):
@@ -123,10 +134,11 @@ class LLMAnalyst:
         for index in item.evidence_indices:
             if 0 <= index < len(evidence) and evidence[index].id not in evidence_ids:
                 evidence_ids.append(evidence[index].id)
+        statement = self._append_verified_calculation(state, subtask, item)
         try:
             finding = Finding(
                 subtask_id=subtask.id,
-                statement=item.statement,
+                statement=statement,
                 kind=item.kind,
                 evidence_ids=evidence_ids,
                 confidence=item.confidence,
@@ -136,3 +148,26 @@ class LLMAnalyst:
             # rather than crash -- the Critic will notice the resulting gap.
             return
         state.add_finding(finding)
+
+    def _append_verified_calculation(
+        self, state: RunState, subtask: Subtask, item: _FindingItem
+    ) -> str:
+        """If the model flagged an arithmetic expression behind this finding's number,
+        verify it with the deterministic calculator tool (never trust the model's own
+        mental arithmetic) and make the checked result visible in the statement.
+        """
+        if not item.calculation:
+            return item.statement
+        try:
+            result = safe_eval(item.calculation)
+        except CalculatorError as exc:
+            state.limitations.append(
+                f"Subtask {subtask.id}: could not verify calculation {item.calculation!r} ({exc})"
+            )
+            return item.statement
+        number = int(result) if result.is_integer() else round(result, 2)
+        annotated = f"{item.statement} (verified: {item.calculation} = {number})"
+        # Finding.statement has the same 1500-char ceiling as _FindingItem; an
+        # already-long statement plus the annotation could exceed it, and losing the
+        # whole finding over a cosmetic suffix would be a worse outcome than a plain one.
+        return annotated if len(annotated) <= 1500 else item.statement

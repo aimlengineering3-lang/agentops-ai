@@ -12,7 +12,7 @@ from agentops.contracts import (
     SubtaskStatus,
 )
 from agentops.contracts.ids import utc_now
-from agentops.errors import BudgetExceededError, MalformedOutputError
+from agentops.errors import BudgetExceededError, MalformedOutputError, ProviderError
 
 from .budget import BudgetGuard
 from .context import RunContext
@@ -53,7 +53,14 @@ class Orchestrator:
         state.status = RunStatus.RUNNING
         self._bus.emit(state, _ORCH, EventType.RUN_STARTED, "Run started")
 
-        order = self._make_plan(state, ctx)
+        try:
+            order = self._make_plan(state, ctx)
+        except ProviderError as exc:
+            # No plan means there is nothing to research or report on, so this is the one
+            # place a provider failure legitimately ends the run as FAILED -- but with a
+            # recorded reason and a closed trace, not a silent crash.
+            self._fail_run(state, f"Planning failed: {type(exc).__name__}: {exc}")
+            return state
         try:
             for subtask_id in order:
                 self._run_subtask(state, ctx, subtask_id, research=True)
@@ -95,9 +102,27 @@ class Orchestrator:
         subtask = state.plan.get(subtask_id)
         subtask.status = SubtaskStatus.RUNNING
         subtask.attempts += 1
-        if research:
-            self._researcher.research(state, ctx, subtask)
-        self._analyst.analyze(state, ctx, subtask)
+        try:
+            if research:
+                self._researcher.research(state, ctx, subtask)
+            self._analyst.analyze(state, ctx, subtask)
+        except (ProviderError, MalformedOutputError) as exc:
+            # One subtask's provider outage (rate limit, timeout, bad output) must not sink
+            # the whole run: mark it failed, record why, and let the remaining subtasks,
+            # the critic and the finalizer work with what exists. BudgetExceededError is
+            # deliberately NOT caught here -- it stops the whole run (see run()).
+            subtask.status = SubtaskStatus.FAILED
+            state.limitations.append(f"Subtask {subtask_id} failed: {type(exc).__name__}: {exc}")
+            self._bus.emit(
+                state,
+                _ORCH,
+                EventType.ERROR,
+                f"Subtask {subtask_id} failed: {type(exc).__name__}",
+                subtask_id=subtask_id,
+                success=False,
+                data={"error": type(exc).__name__},
+            )
+            return
         subtask.status = SubtaskStatus.DONE
 
     def _critique_loop(self, state: RunState, ctx: RunContext) -> None:
@@ -171,7 +196,21 @@ class Orchestrator:
             retries.append((subtask_id, needs_research))
         return retries
 
+    def _fail_run(self, state: RunState, reason: str) -> None:
+        state.limitations.append(reason)
+        state.status = RunStatus.FAILED
+        state.finished_at = utc_now()
+        self._bus.emit(state, _ORCH, EventType.ERROR, reason, success=False)
+        self._bus.emit(
+            state,
+            _ORCH,
+            EventType.RUN_FINISHED,
+            f"Run finished: {state.status.value}",
+            success=False,
+        )
+
     def _finalize(self, state: RunState, ctx: RunContext) -> None:
+        ctx.guard.enter_finalization()
         try:
             self._finalizer.finalize(state, ctx)
         except BudgetExceededError as exc:

@@ -69,3 +69,28 @@ def test_original_messages_are_not_mutated():
     generate_structured(llm, original, Toy)
 
     assert original == MESSAGES  # generate_structured must not mutate the caller's list
+
+
+def test_repair_sums_usage_and_reports_two_attempts():
+    llm = FakeLLM(["not json at all", '{"name": "robot", "count": 3}'])
+    single = FakeLLM(['{"name": "robot", "count": 3}'])
+
+    _, repaired = generate_structured(llm, MESSAGES, Toy)
+    _, plain = generate_structured(single, MESSAGES, Toy)
+
+    assert repaired.attempts == 2
+    assert plain.attempts == 1
+    # both attempts cost tokens: the repair call re-sends the conversation plus feedback
+    assert repaired.usage.tokens_in > plain.usage.tokens_in
+    assert repaired.usage.tokens_out > plain.usage.tokens_out
+
+
+def test_malformed_error_carries_the_cost_of_both_attempts():
+    llm = FakeLLM(["still not json", "still not json either"])
+
+    with pytest.raises(MalformedOutputError) as info:
+        generate_structured(llm, MESSAGES, Toy)
+
+    assert info.value.attempts == 2
+    assert info.value.tokens_in > 0
+    assert info.value.tokens_out > 0
