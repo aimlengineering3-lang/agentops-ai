@@ -95,6 +95,27 @@ What the grounding numbers do **not** prove: they check that each citation point
 evidence, not that the evidence semantically supports the claim. That needs an LLM judge or human
 review and is listed under limitations.
 
+### Results (2026-10-02 run)
+
+7/7 tasks completed (1 `completed_with_limitations`). All grounding metrics at 1.00:
+evidence coverage, citation resolution, supported-finding rate, tool success rate.
+Topic coverage averaged 0.92. Mean 13.6 LLM calls / 10.9 tool calls per run; p50 latency 39.8s
+(max 56.1s on the most complex task). The hallucination probe (`unanswerable-premise`,
+an invented ISO standard) correctly produced a limited, honest report instead of
+fabricating compliance details — the intended outcome for that task.
+
+| Task | Status | Evid. cov. | Cit. resolved | Supported | Topics | Calls (LLM/tool) | Time (s) |
+|---|---|---|---|---|---|---|---|
+| enterprise-ai-platform | completed | 1.00 | 1.00 | 1.00 | 0.75 | 12/9 | 35.8 |
+| fastapi-vs-flask | completed | 1.00 | 1.00 | 1.00 | 0.75 | 15/13 | 45.2 |
+| build-vs-buy-chatbot | completed | 1.00 | 1.00 | 1.00 | 1.00 | 12/9 | 39.8 |
+| vector-db-selection | completed_with_limitations | 1.00 | 1.00 | 1.00 | 1.00 | 17/14 | 53.9 |
+| agent-security-risks | completed | 1.00 | 1.00 | 1.00 | 1.00 | 9/7 | 26.5 |
+| travel-cost-estimate | completed | 1.00 | 1.00 | 1.00 | 1.00 | 18/15 | 56.1 |
+| unanswerable-premise | completed | 1.00 | 1.00 | 1.00 | n/a | 12/9 | 33.5 |
+
+Full metrics: `eval/results/latest.md`.
+
 ## Deploy for free
 
 1. **Backend on Render** (free web service). Use `render.yaml`; set the API keys as secrets.
@@ -130,43 +151,3 @@ eval/            benchmark tasks, metrics, runner
 tests/           hermetic tests using fake LLM and search providers
 scripts/         quota probes (manual, never in CI)
 ```
-## Evaluation
-
-`eval/tasks.json` holds a small benchmark: architecture, comparison, decision, risk, numeric and
-one **hallucination probe** (an invented ISO standard; the right outcome is an honest, limited
-report). Run it against the real agent:
-
-```bash
-python -m eval.run_eval                       # all tasks, ~13 LLM calls each
-python -m eval.run_eval --only fastapi-vs-flask
-```
-
-Output goes to `eval/results/` (JSON plus a readable `latest.md`). Metrics are computed from the
-run record, never from the model's own claims: completion, subtask completion, evidence coverage,
-citation resolution, supported-finding rate, topic coverage, tool success rate, duplicate
-searches, retries, critic recovery, schema repairs, injection drops, latency and tokens.
-
-What the grounding numbers do **not** prove: they check that each citation points at collected
-evidence, not that the evidence semantically supports the claim. That needs an LLM judge or human
-review and is listed under limitations.
-
-### Results (2026-10-02 run)
-
-7/7 tasks completed (1 `completed_with_limitations`). All grounding metrics at 1.00:
-evidence coverage, citation resolution, supported-finding rate, tool success rate.
-Topic coverage averaged 0.92. Mean 13.6 LLM calls / 10.9 tool calls per run; p50 latency 39.8s
-(max 56.1s on the most complex task). The hallucination probe (`unanswerable-premise`,
-an invented ISO standard) correctly produced a limited, honest report instead of
-fabricating compliance details — the intended outcome for that task.
-
-| Task | Status | Evid. cov. | Cit. resolved | Supported | Topics | Calls (LLM/tool) | Time (s) |
-|---|---|---|---|---|---|---|---|
-| enterprise-ai-platform | completed | 1.00 | 1.00 | 1.00 | 0.75 | 12/9 | 35.8 |
-| fastapi-vs-flask | completed | 1.00 | 1.00 | 1.00 | 0.75 | 15/13 | 45.2 |
-| build-vs-buy-chatbot | completed | 1.00 | 1.00 | 1.00 | 1.00 | 12/9 | 39.8 |
-| vector-db-selection | completed_with_limitations | 1.00 | 1.00 | 1.00 | 1.00 | 17/14 | 53.9 |
-| agent-security-risks | completed | 1.00 | 1.00 | 1.00 | 1.00 | 9/7 | 26.5 |
-| travel-cost-estimate | completed | 1.00 | 1.00 | 1.00 | 1.00 | 18/15 | 56.1 |
-| unanswerable-premise | completed | 1.00 | 1.00 | 1.00 | n/a | 12/9 | 33.5 |
-
-Full metrics: `eval/results/latest.md`.
