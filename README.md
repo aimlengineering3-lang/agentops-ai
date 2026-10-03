@@ -10,7 +10,7 @@ is tied to a collected evidence record.
 
 ## How it works
 
-```mermaid
+
 flowchart LR
     O[Objective] --> P[Planner]
     P --> R[Researcher<br/>search tool]
@@ -19,7 +19,6 @@ flowchart LR
     C -- "weak / missing evidence<br/>(bounded retries)" --> R
     C -- pass --> F[Finalizer]
     F --> X[Report + sources + trace]
-```
 
 | Agent | Job | Output contract |
 |---|---|---|
@@ -64,14 +63,13 @@ The **orchestrator is plain Python, not an LLM**. Only code decides whether the 
 
 ## Run locally
 
-```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 cp .env.example .env                                     # then fill in keys and model names
 uvicorn api.main:app --port 8000                         # backend
 streamlit run ui/app.py                                  # UI, in a second terminal
 pytest -q                                                # hermetic: no keys, no network
-```
+
 
 Set `RUNS_DB_PATH=runs.db` to keep runs across restarts (SQLite). Leave it empty for in-memory.
 
@@ -81,10 +79,8 @@ Set `RUNS_DB_PATH=runs.db` to keep runs across restarts (SQLite). Leave it empty
 one **hallucination probe** (an invented ISO standard; the right outcome is an honest, limited
 report). Run it against the real agent:
 
-```bash
 python -m eval.run_eval                       # all tasks, ~13 LLM calls each
 python -m eval.run_eval --only fastapi-vs-flask
-```
 
 Output goes to `eval/results/` (JSON plus a readable `latest.md`). Metrics are computed from the
 run record, never from the model's own claims: completion, subtask completion, evidence coverage,
@@ -143,11 +139,9 @@ Full metrics: `eval/results/latest.md`.
 
 ## Repository layout
 
-```
 agentops/        core: contracts, orchestrator, agents, llm and search routers, runs, guardrails
 api/             FastAPI app (thin shell around RunManager)
 ui/              Streamlit app
 eval/            benchmark tasks, metrics, runner
 tests/           hermetic tests using fake LLM and search providers
 scripts/         quota probes (manual, never in CI)
-```
