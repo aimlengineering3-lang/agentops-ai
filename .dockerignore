@@ -1,0 +1,14 @@
+# Keep secrets and junk OUT of the image. .env must never be baked into an image.
+.env
+.venv
+.git
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+*.egg-info
+runs.db
+eval/results
+report.json
+run_output.json
+EOF

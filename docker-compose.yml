@@ -1,0 +1,42 @@
+# Two containers from the same image: the API and the Streamlit UI.
+#   docker compose up --build    start both
+#   docker compose down          stop and remove them
+services:
+  api:
+    build: .
+    env_file:
+      - .env
+    environment:
+      RUNS_DB_PATH: /data/runs.db
+    volumes:
+      - agentops-data:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  ui:
+    build: .
+    command:
+      - streamlit
+      - run
+      - ui/app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+    environment:
+      AGENTOPS_API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  agentops-data:
